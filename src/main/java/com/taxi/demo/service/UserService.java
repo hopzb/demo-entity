@@ -1,78 +1,137 @@
 package com.taxi.demo.service;
 
+import com.taxi.demo.config.JwtService;
 import com.taxi.demo.dto.RegisterUserRequest;
 import com.taxi.demo.dto.UserResponseDTO;
+import com.taxi.demo.dto.auth.LoginRequest;
+import com.taxi.demo.dto.auth.LoginResponse;
 import com.taxi.demo.entity.User;
 import com.taxi.demo.repository.UserRepository;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.lang.NonNull;
-import org.springframework.security.crypto.password.PasswordEncoder;
+import com.taxi.demo.util.Md5Util;
+import lombok.RequiredArgsConstructor;
+import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
 import java.util.stream.Collectors;
 
 @Service
+@RequiredArgsConstructor
 public class UserService {
 
-    @Autowired
-    private UserRepository userRepository;
+    private final UserRepository userRepository;
+    private final JwtService jwtService;
 
-    @Autowired
-    private PasswordEncoder passwordEncoder;
 
     public UserResponseDTO createUser(RegisterUserRequest request) {
-        if (userRepository.existsByEmail(request.email)) {
+        return register(request);
+    }
+
+    public UserResponseDTO register(RegisterUserRequest request) {
+        validateRegisterRequest(request);
+
+        if (userRepository.existsByEmail(request.getEmail())) {
             throw new IllegalArgumentException("Email đã tồn tại");
         }
+        if (userRepository.existsByPhone(request.getPhone())) {
+            throw new IllegalArgumentException("Số điện thoại đã tồn tại");
+        }
 
-        User user = new User();
-        user.setEmail(request.email);
-        user.setFullName(request.fullName);
-        user.setPassword(passwordEncoder.encode(request.password)); // Mã hóa password
-        user.setRole(request.role);
-        user.setPhone(request.phone);
+        User user = User.builder()
+                .email(request.getEmail())
+                .fullName(request.getFullName())
+                .password(Md5Util.hash(request.getPassword()))
+                .role(normalizeRole(request.getRole()))
+                .phone(request.getPhone())
+                .build();
 
-        User saved = userRepository.save(user);
-        return mapToDTO(saved);
+        return toDTO(userRepository.save(user));
+    }
+
+    public LoginResponse login(LoginRequest request) {
+        if (request == null || request.getPhone() == null || request.getPassword() == null) {
+            throw new IllegalArgumentException("Thiếu phone hoặc password");
+        }
+
+        User user = userRepository.findByPhone(request.getPhone())
+                .orElseThrow(() -> new IllegalArgumentException("Sai phone hoặc password"));
+
+        String hashedPassword = Md5Util.hash(request.getPassword());
+        if (!hashedPassword.equals(user.getPassword())) {
+            throw new IllegalArgumentException("Sai phone hoặc password");
+        }
+
+        String token = jwtService.generateToken(user);
+        return LoginResponse.builder()
+                .user(toDTO(user))
+                .token(token)
+                .build();
+    }
+
+    public UserResponseDTO getMe(Authentication authentication) {
+        Long userId = Long.valueOf(authentication.getName());
+        return toDTO(userRepository.findById(userId)
+                .orElseThrow(() -> new IllegalArgumentException("Không tìm thấy user")));
     }
 
     public List<UserResponseDTO> getAllUsers() {
-        return userRepository.findAll()
-                .stream()
-                .map(this::mapToDTO)
-                .collect(Collectors.toList());
+        return userRepository.findAll().stream().map(this::toDTO).collect(Collectors.toList());
     }
 
-    public UserResponseDTO getUserById(@NonNull Long id) {
-        User user = userRepository.findById(id)
-                .orElseThrow(() -> new IllegalArgumentException("Không tìm thấy user với id = " + id));
-        return mapToDTO(user);
+    public UserResponseDTO getUserById(Long id) {
+        return toDTO(userRepository.findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("Không tìm thấy user với id = " + id)));
     }
 
-    public UserResponseDTO updatePhone(@NonNull Long id, String phone) {
+    public UserResponseDTO updatePhone(Long id, String phone) {
+        if (phone == null || phone.isBlank()) {
+            throw new IllegalArgumentException("Phone không hợp lệ");
+        }
         User user = userRepository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("Không tìm thấy user với id = " + id));
-
         user.setPhone(phone);
-        User updated = userRepository.save(user);
-        return mapToDTO(updated);
+        return toDTO(userRepository.save(user));
     }
 
-    public void deleteUser(@NonNull Long id) {
+    public void deleteUser(Long id) {
         if (!userRepository.existsById(id)) {
             throw new IllegalArgumentException("Không tìm thấy user với id = " + id);
         }
         userRepository.deleteById(id);
     }
 
-    private UserResponseDTO mapToDTO(User user) {
-        UserResponseDTO dto = new UserResponseDTO();
-        dto.id = user.getId();
-        dto.email = user.getEmail();
-        dto.fullName = user.getFullName();
-        dto.role = user.getRole();
-        dto.phone = user.getPhone();
-        return dto;
+    private void validateRegisterRequest(RegisterUserRequest request) {
+        if (request == null) {
+            throw new IllegalArgumentException("Request không hợp lệ");
+        }
+        if (request.getEmail() == null || request.getEmail().isBlank()) {
+            throw new IllegalArgumentException("Email không được để trống");
+        }
+        if (request.getFullName() == null || request.getFullName().isBlank()) {
+            throw new IllegalArgumentException("Họ tên không được để trống");
+        }
+        if (request.getPassword() == null || request.getPassword().isBlank()) {
+            throw new IllegalArgumentException("Password không được để trống");
+        }
+        if (request.getPhone() == null || request.getPhone().isBlank()) {
+            throw new IllegalArgumentException("Phone không được để trống");
+        }
+    }
+
+    private String normalizeRole(String role) {
+        if (role == null || role.isBlank()) {
+            return "ROLE_PASSENGER";
+        }
+        return role.startsWith("ROLE_") ? role : "ROLE_" + role.toUpperCase();
+    }
+
+    private UserResponseDTO toDTO(User user) {
+        return UserResponseDTO.builder()
+                .id(user.getId())
+                .email(user.getEmail())
+                .fullName(user.getFullName())
+                .role(user.getRole())
+                .phone(user.getPhone())
+                .build();
     }
 }
